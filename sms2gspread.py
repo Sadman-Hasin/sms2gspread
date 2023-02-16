@@ -1,4 +1,5 @@
 import sys
+import time
 import colorama
 from colorama import Fore, init
 import subprocess
@@ -21,6 +22,9 @@ class Sms2gspread():
         self.sheet = self.service_account.open(self.file)
         self.worksheet = self.sheet.worksheet(self.wsheet)
         self.print_message("Connected Successfully!")
+        
+        self.new_sms = []
+        self.timeInterval = 1
 
     def print_message(self, message):
         print(Fore.GREEN+"[MESSAGE]", message)
@@ -28,47 +32,74 @@ class Sms2gspread():
     def print_error(self, error):
         print(Fore.RED+"[ERROR]", error)
 
-    def scrape_sms(self):
+    def checkNewMessages(self, all_sms, i=-1):
+        new = self.scrape_sms(i*(-1))["sms"][i]
+        if not new["body"] == all_sms[-1]["body"] :
+            self.new_sms.append(new)
+
+            self.checkNewMessages(all_sms, i-1)
+
+        
+
+    def scrape_sms(self, l=-1):
         out = subprocess.check_output([
             "termux-sms-list",
             "-f",
             self.number,
             "-l",
-            "-1"
+            str(l)
         ]).decode()
 
         sms = json.loads(out.replace("[", '{ "sms" : [').replace("]", "] }"))
-        
-        self.print_message(f"Collected SMS from {self.number}.")
-        
+         
         return sms
 
-    def update_gspread(self):
-        sms = self.scrape_sms()["sms"]
+    def formatBodySMS(self, body):
+        values = [
+                body[body.find("A/C:")+4:body.find("Fee:")-2],
+                body[body.find("TxnId:")+6:body.find("Date")-1],
+                body[2:body.find("received")-1],
+                body[body.find("Date:")+5:body.find("Download")-2]
+            ]
 
+        return values
+
+    def update_gspread(self, values): 
+        self.worksheet.insert_row(values, 2)
+    
+    def main(self):
+        sms = self.scrape_sms()["sms"]
+        self.print_message(f"Collected SMS from {self.number}.")
+        
         self.print_message("Attempting to Update Google Spreadsheet.")
+
         for s in sms:
-            self.worksheet.insert_row([
-                s["number"],
-                s["received"],
-                s["body"]
-            ], 2)
+            sms_body = s["body"]
+            values = self.formatBodySMS(sms_body)
+
+            if not self.worksheet.find(values[1]):
+                self.update_gspread(values)
 
         self.print_message("Successfully Updated Google Spread Sheet!")
+        
+        self.print_message(f"Started Listening for New SMS with time interval of {self.timeInterval} seconds.")
+        while True:
+            self.checkNewMessages(sms)
+            if self.new_sms:
+                for s in self.new_sms[::-1]:
+                    values = self.formatBodySMS(s["body"])
+                    if not self.worksheet.find(values[1]):
+                        self.update_gspread(values)
 
-    
-    def update_gspread_from_Dummy(self):
-        raw_sms = """Tk3,935.00 received from A/C:019888656427 Fee:Tk0, Your A/C Balance: Tk7,125.69 TxnId:3513049767 Date:08-FEB-23 12:56:11 am. Download https://bit.ly/nexuspay"""
-        values = [
-                raw_sms[raw_sms.find("A/C:")+4:raw_sms.find("Fee:")-2],
-                raw_sms[raw_sms.find("TxnId:")+6:raw_sms.find("Date")-1],
-                raw_sms[2:raw_sms.find("received")-1],
-                raw_sms[raw_sms.find("Date:")+5:raw_sms.find("Download")-2]
-                ]
+                        self.print_message("Successfully Updated Google Spread Sheet!")
+                
+                    sms.append(s)
 
-        self.worksheet.insert_row(values, 2)
+                self.new_sms = []
 
-        print("Updated Google Spread Sheet! (From Dummy Message)")
+            
+            time.sleep(self.timeInterval)
+
 
 
 
